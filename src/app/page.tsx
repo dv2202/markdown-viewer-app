@@ -1,10 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
-import rehypeRaw from 'rehype-raw';
+import React, { useState, useRef, useEffect, useSyncExternalStore, useCallback } from 'react';
 import {
   UploadCloud,
   FileText,
@@ -25,15 +21,34 @@ import {
   ArrowLeft,
   ShieldCheck,
   Zap,
-  BookOpen,
   Download,
   Code,
-  Layout,
   Sliders,
-  Type,
-  Maximize2
+  Type
 } from 'lucide-react';
 import ShaderHero from './ShaderHero';
+import MarkdownContent from '@/components/MarkdownContent';
+import SharingPanel from '@/components/SharingPanel';
+import { BlogSnapshot, FONTS_LIST, safeProfileUrl, SocialLink } from '@/lib/blog';
+
+let memoryTheme = false;
+function getTheme() {
+  try { return localStorage.getItem('mv_dark_mode') === 'true'; }
+  catch { return memoryTheme; }
+}
+function subscribeTheme(callback: () => void) {
+  window.addEventListener('storage', callback);
+  window.addEventListener('theme-changed', callback);
+  return () => {
+    window.removeEventListener('storage', callback);
+    window.removeEventListener('theme-changed', callback);
+  };
+}
+function setIsDarkMode(value: boolean) {
+  memoryTheme = value;
+  try { localStorage.setItem('mv_dark_mode', String(value)); } catch { /* In-memory theme still works. */ }
+  window.dispatchEvent(new Event('theme-changed'));
+}
 
 // Brand SVGs
 const GithubIcon = ({ className }: { className?: string }) => (
@@ -54,13 +69,6 @@ const TwitterIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
-interface SocialLink {
-  id: string;
-  label: string;
-  url: string;
-  type: 'github' | 'twitter' | 'linkedin' | 'website' | 'email' | 'custom';
-}
-
 const DEFAULT_LINKS: SocialLink[] = [
   { id: '1', label: 'Blog', url: '#blog', type: 'custom' },
   { id: '2', label: 'Contact', url: 'mailto:ramin@example.com', type: 'email' },
@@ -68,17 +76,6 @@ const DEFAULT_LINKS: SocialLink[] = [
   { id: '4', label: 'GitHub', url: 'https://github.com', type: 'github' },
   { id: '5', label: 'Twitter', url: 'https://twitter.com', type: 'twitter' },
   { id: '6', label: 'LinkedIn', url: 'https://linkedin.com', type: 'linkedin' },
-];
-
-const FONTS_LIST = [
-  { id: 'inter', name: 'Clean Modern Sans (Inter)', class: 'font-inter', desc: 'Standard tech clean' },
-  { id: 'jakarta', name: 'Plus Jakarta Sans', class: 'font-jakarta', desc: 'Geometric & crisp' },
-  { id: 'newsreader', name: 'Newsreader (Editorial Serif)', class: 'font-newsreader', desc: 'New York Times style' },
-  { id: 'lora', name: 'Lora (Contemporary Serif)', class: 'font-lora', desc: 'Elegant blog reading' },
-  { id: 'merriweather', name: 'Merriweather (Literary Serif)', class: 'font-merriweather', desc: 'Screen-optimized serif' },
-  { id: 'playfair', name: 'Playfair Display', class: 'font-playfair', desc: 'High-contrast luxury' },
-  { id: 'space', name: 'Space Grotesk', class: 'font-space', desc: 'Modern & quirky' },
-  { id: 'jetbrains', name: 'JetBrains Mono', class: 'font-jetbrains', desc: 'Developer monospace' },
 ];
 
 const SAMPLE_MD = `Once you have those four buckets in your head, the next step is not "optimize." It is "figure out which kind of work is actually hurting you."
@@ -141,8 +138,11 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<'edit' | 'view'>('edit');
 
   // Blog states
+  const [title, setTitle] = useState('My blog');
+  const [draftId, setDraftId] = useState<string | undefined>();
+  const newDraft = useCallback(() => setDraftId(undefined), []);
   const [markdown, setMarkdown] = useState<string>(SAMPLE_MD);
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
+  const isDarkMode = useSyncExternalStore(subscribeTheme, getTheme, () => false);
   const [authorName, setAuthorName] = useState<string>('Ramin Mousavi');
   const [avatarUrl, setAvatarUrl] = useState<string>('https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80');
   const [selectedFont, setSelectedFont] = useState<string>('inter');
@@ -158,24 +158,14 @@ export default function Home() {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize theme
-  useEffect(() => {
-    const saved = localStorage.getItem('mv_dark_mode');
-    if (saved !== null) {
-      setIsDarkMode(saved === 'true');
-    }
-  }, []);
-
   // Sync theme
   useEffect(() => {
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
       document.body.classList.add('dark');
-      localStorage.setItem('mv_dark_mode', 'true');
     } else {
       document.documentElement.classList.remove('dark');
       document.body.classList.remove('dark');
-      localStorage.setItem('mv_dark_mode', 'false');
     }
   }, [isDarkMode]);
 
@@ -265,7 +255,7 @@ export default function Home() {
 
   // Add social link
   const handleAddLink = () => {
-    if (!newLinkLabel.trim() || !newLinkUrl.trim()) return;
+    if (!newLinkLabel.trim() || !safeProfileUrl(newLinkUrl.trim())) return;
     const newLink: SocialLink = {
       id: Date.now().toString(),
       label: newLinkLabel.trim(),
@@ -279,6 +269,18 @@ export default function Home() {
 
   const handleDeleteLink = (id: string) => {
     setSocialLinks(socialLinks.filter(l => l.id !== id));
+  };
+
+  const loadDraft = (blog: BlogSnapshot, id: string) => {
+    setTitle(blog.title);
+    setMarkdown(blog.markdown);
+    setAuthorName(blog.authorName);
+    setAvatarUrl(blog.avatarUrl);
+    setSelectedFont(blog.selectedFont);
+    setSocialLinks(blog.socialLinks);
+    setIsDarkMode(blog.isDarkMode);
+    setDraftId(id);
+    setActiveTab('edit');
   };
 
   // Stats calculation
@@ -404,9 +406,9 @@ export default function Home() {
               <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-3">
                 <ShieldCheck className="w-4 h-4" />
               </div>
-              <h3 className="font-semibold text-sm text-neutral-900 dark:text-white">100% Client-Side Privacy</h3>
+              <h3 className="font-semibold text-sm text-neutral-900 dark:text-white">Preview Locally, Share When Ready</h3>
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 leading-relaxed">
-                Your content stays strictly on your machine. Export Markdown or HTML anytime.
+                Preview on your device. Publish a snapshot to share a short link with anyone.
               </p>
             </div>
           </div>
@@ -509,6 +511,15 @@ export default function Home() {
           </div>
         </div>
       </header>
+
+      <SharingPanel
+        blog={{ title, markdown, authorName, avatarUrl, selectedFont, socialLinks, isDarkMode }}
+        draftId={draftId}
+        onSaved={setDraftId}
+        onLoad={loadDraft}
+        onNewDraft={newDraft}
+        onTitleChange={setTitle}
+      />
 
       {/* ================= EDIT & UPLOAD MODE ================= */}
       {activeTab === 'edit' && (
@@ -670,7 +681,7 @@ export default function Home() {
                 />
                 <select
                   value={newLinkType}
-                  onChange={(e) => setNewLinkType(e.target.value as any)}
+                  onChange={(e) => setNewLinkType(e.target.value as SocialLink['type'])}
                   className="text-xs px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="github">GitHub</option>
@@ -771,56 +782,8 @@ export default function Home() {
           {/* Article Container matching screenshot layout */}
           <article id="blog-preview-article" className="max-w-[760px] mx-auto px-6 py-6 pb-28">
             <div className={`prose dark:prose-invert max-w-none text-neutral-900 dark:text-neutral-100 leading-relaxed ${activeFontObj.class}`}>
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeRaw, rehypeHighlight]}
-                components={{
-                  h1: ({ node, ...props }) => (
-                    <h1 className="text-3xl font-bold tracking-tight mt-8 mb-4 text-neutral-900 dark:text-neutral-100" {...props} />
-                  ),
-                  h2: ({ node, ...props }) => (
-                    <h2 className="text-xl font-semibold tracking-tight mt-8 mb-3 text-neutral-900 dark:text-neutral-100" {...props} />
-                  ),
-                  h3: ({ node, ...props }) => (
-                    <h3 className="text-lg font-semibold mt-6 mb-2 text-neutral-900 dark:text-neutral-100" {...props} />
-                  ),
-                  p: ({ node, ...props }) => (
-                    <p className="my-4 text-[15.5px] leading-[1.8] text-neutral-800 dark:text-neutral-200" {...props} />
-                  ),
-                  ul: ({ node, ...props }) => (
-                    <ul className="list-disc pl-5 my-4 space-y-1.5 text-[15.5px] leading-relaxed text-neutral-800 dark:text-neutral-200" {...props} />
-                  ),
-                  ol: ({ node, ...props }) => (
-                    <ol className="list-decimal pl-5 my-4 space-y-1.5 text-[15.5px] leading-relaxed text-neutral-800 dark:text-neutral-200" {...props} />
-                  ),
-                  li: ({ node, ...props }) => (
-                    <li className="pl-1" {...props} />
-                  ),
-                  blockquote: ({ node, ...props }) => (
-                    <blockquote className="border-l-2 border-neutral-900 dark:border-neutral-100 pl-4 my-6 italic text-neutral-600 dark:text-neutral-400" {...props} />
-                  ),
-                  code: ({ node, className, children, ...props }: any) => {
-                    const isInline = !className;
-                    if (isInline) {
-                      return (
-                        <code
-                          className="px-1.5 py-0.5 mx-0.5 text-[13px] font-mono bg-neutral-100 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 rounded border border-neutral-200/60 dark:border-neutral-700/60"
-                          {...props}
-                        >
-                          {children}
-                        </code>
-                      );
-                    }
-                    return (
-                      <code className={className} {...props}>
-                        {children}
-                      </code>
-                    );
-                  }
-                }}
-              >
-                {markdown}
-              </ReactMarkdown>
+              <h1>{title || 'Untitled blog'}</h1>
+              <MarkdownContent markdown={markdown} />
             </div>
           </article>
 
